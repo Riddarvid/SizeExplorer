@@ -2,6 +2,9 @@ module Main (main) where
 
 import Explorer ( runExplorer, Explorer, showStatus, showCaret )
 import Control.Monad.IO.Class (MonadIO(liftIO))
+import Control.Monad.Except (MonadError(catchError))
+import FileSystem (FileError (..)) -- TODO fix dependencies
+import System.IO (stdout, hFlush)
 
 main :: IO ()
 main = do
@@ -10,8 +13,61 @@ main = do
 
 explorerRepl :: Explorer ()
 explorerRepl = do
+  printStatus
+  printCaret
+  getInput
+
+printStatus :: Explorer ()
+printStatus = do
   status <- showStatus
   liftIO $ putStrLn status
+
+printCaret :: Explorer ()
+printCaret = do
   caret <- showCaret
-  liftIO $ putStrLn caret
-  -- TODO get user input
+  liftIO $ putStr caret
+  liftIO $ hFlush stdout
+
+printAndRetry :: FileError -> Explorer ()
+printAndRetry err = do
+  liftIO $ putStrLn msg
+  explorerRepl
+  where
+    msg = case err of
+      NoSuchFile -> "File does not exist"
+      NoPermission -> "You don't have permission to open that file"
+      Other msg' -> "Error: " ++ msg'
+
+getInput :: Explorer ()
+getInput = do
+  input <- liftIO getLine
+  catchError (executeCommand input) printAndRetry
+
+executeCommand :: String -> Explorer ()
+executeCommand str = case tokens of
+  [] -> do
+    printCaret
+    getInput
+  (cmd : args) -> case cmd of
+    "l" -> loadFS args
+    "cd" -> cd args
+    "exit" -> exit
+    "h" -> help
+    _ -> instrNotFound cmd
+  where
+    tokens = words str
+
+loadFS :: [String] -> Explorer ()
+loadFS = undefined
+
+cd :: [String] -> Explorer ()
+cd = undefined
+
+exit :: Explorer ()
+exit = undefined
+
+help :: Explorer ()
+help = undefined
+
+instrNotFound :: String -> Explorer ()
+instrNotFound = undefined
