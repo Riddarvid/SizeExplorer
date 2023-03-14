@@ -1,15 +1,17 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 
-module Explorer (Explorer, runExplorer, analyzeDir, tryAnalyzeDir, showStatus, showCaret) where
+module Explorer (Explorer, runExplorer, analyzeDir, tryAnalyzeDir, showStatus, showCaret,
+  loadFileSystem) where
 
 import FileSystem
   (FileSystem (FS), Directory (Directory, BadDir), File (File),
-  emptyFS, dirSize, fileSize, FileError (NoSuchFile, NoPermission, Other), showDir, Path, emptyPath, getDir, showPath)
+  emptyFS, dirSize, fileSize, FileError (NoSuchFile, NoPermission, Other),
+  showDir, Path, emptyPath, getDir, showPath)
 
 import Control.Monad.Error.Class ( MonadError (catchError, throwError) )
 import Control.Monad.Except (ExceptT, runExceptT)
 
-import Control.Monad.State.Class (MonadState)
+import Control.Monad.State.Class (MonadState, modify)
 import Control.Monad.State ( StateT, evalStateT, gets )
 
 import Control.Monad.IO.Class (MonadIO, liftIO)
@@ -20,6 +22,8 @@ import System.Directory
   (listDirectory, doesDirectoryExist, doesFileExist, getFileSize)
 import System.FilePath (takeFileName, (</>))
 import System.IO.Error (tryIOError, isPermissionError, isDoesNotExistError)
+import Data.List (sort, sortBy)
+import Data.Ord (comparing)
 
 data ExplorerState = ES {
   esPath :: Path,
@@ -48,6 +52,13 @@ runExplorer (MKExplorer explorer) = do
 
 -- File system
 
+loadFileSystem :: FilePath -> Explorer ()
+loadFileSystem path = do
+  dir <- analyzeDir path
+  let fs = FS (Just dir)
+  modify (\s -> s{esFs = fs})
+  -- TODO: set correct path
+
 tryAnalyzeDir :: FilePath -> Explorer Directory
 tryAnalyzeDir path = catchError (analyzeDir path) badDir
   where
@@ -60,11 +71,11 @@ analyzeDir path = do
   let contentPaths = map (path </>) contents
 
   subDirs <- liftIOError $ filterM doesDirectoryExist contentPaths
-  subDirs' <- mapM tryAnalyzeDir subDirs
+  subDirs' <- sortBy (flip compare) <$> mapM tryAnalyzeDir subDirs
   let subDirsSize = sum $ map dirSize subDirs'
 
   files <- liftIOError $ filterM doesFileExist contentPaths
-  files' <- mapM analyzeFile files
+  files' <- sortBy (flip compare) <$> mapM analyzeFile files
   let filesSize = sum $ map fileSize files'
 
   let name = takeFileName path
@@ -109,4 +120,4 @@ showFS (FS dir) path = case dir of
 showCaret :: Explorer String
 showCaret = do
   path <- gets esPath
-  return $ showPath path ++ ">"
+  return $ showPath path ++ "> "
