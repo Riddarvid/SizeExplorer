@@ -1,9 +1,8 @@
 module Main (main) where
 
-import Explorer ( runExplorer, Explorer, showStatus, showCaret, loadFileSystem )
+import Explorer ( runExplorer, Explorer, showStatus, showCaret, loadFileSystem, ExplorerError (CmdUsgErr), moveToRoot, moveTo )
 import Control.Monad.IO.Class (MonadIO(liftIO))
-import Control.Monad.Except (MonadError(catchError))
-import FileSystem (FileError (..)) -- TODO fix dependencies
+import Control.Monad.Except (MonadError(catchError, throwError))
 import System.IO (stdout, hFlush)
 
 main :: IO ()
@@ -28,15 +27,10 @@ printCaret = do
   liftIO $ putStr caret
   liftIO $ hFlush stdout
 
-printAndRetry :: FileError -> Explorer ()
+printAndRetry :: ExplorerError -> Explorer ()
 printAndRetry err = do
-  liftIO $ putStrLn msg
+  liftIO $ print err
   explorerRepl
-  where
-    msg = case err of
-      NoSuchFile -> "File does not exist"
-      NoPermission -> "You don't have permission to open that file"
-      Other msg' -> "Error: " ++ msg'
 
 -- TODO autocomplete?
 getInput :: Explorer ()
@@ -49,15 +43,18 @@ executeCommand str = case tokens of
   [] -> do
     printCaret
     getInput
-  (cmd : args) -> case cmd of
-    "l" -> loadFS args
-    "cd" -> cd args
-    "exit" -> exit
-    "q" -> exit
-    "h" -> help
-    _ -> instrNotFound cmd
+  (cmd : args) -> executeCommand' cmd args
   where
     tokens = words str
+
+executeCommand' :: String -> [String] -> Explorer ()
+executeCommand' cmd args = case cmd of
+  "l" -> loadFS args
+  "cd" -> cd args
+  "exit" -> exit
+  "q" -> exit
+  "h" -> help
+  _ -> instrNotFound cmd
 
 loadFS :: [String] -> Explorer ()
 loadFS [dir] = do
@@ -67,7 +64,15 @@ loadFS [dir] = do
 loadFS _ = error "Bla" -- TODO use real error handling instead
 
 cd :: [String] -> Explorer ()
-cd = undefined
+cd args = do
+  action
+  explorerRepl
+  where
+    action = case args of
+      [] -> moveToRoot
+      [dir] -> moveTo dir
+      _ -> throwError (CmdUsgErr "Usage: cd dir")
+
 
 exit :: Explorer ()
 exit = liftIO $ putStrLn "Bye!"

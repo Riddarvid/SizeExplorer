@@ -1,12 +1,12 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, InstanceSigs #-}
 
 module Explorer (Explorer, runExplorer, analyzeDir, tryAnalyzeDir, showStatus, showCaret,
-  loadFileSystem) where
+  loadFileSystem, ExplorerError(..), moveTo, moveToRoot) where
 
 import FileSystem
   (FileSystem (FS), Directory (Directory, BadDir), File (File),
   emptyFS, dirSize, fileSize, FileError (NoSuchFile, NoPermission, Other),
-  showDir, Path, emptyPath, getDir, showPath)
+  showDir, Path (Path), emptyPath, getDir, moveUp, moveDown)
 
 import Control.Monad.Error.Class ( MonadError (catchError, throwError) )
 import Control.Monad.Except (ExceptT, runExceptT)
@@ -22,8 +22,9 @@ import System.Directory
   (listDirectory, doesDirectoryExist, doesFileExist, getFileSize)
 import System.FilePath (takeFileName, (</>))
 import System.IO.Error (tryIOError, isPermissionError, isDoesNotExistError)
-import Data.List (sort, sortBy)
-import Data.Ord (comparing)
+import Data.List (sortBy)
+import Data.Maybe (fromJust)
+import Debug.Trace (trace)
 
 data ExplorerState = ES {
   esPath :: Path,
@@ -33,13 +34,23 @@ data ExplorerState = ES {
 emptyState :: ExplorerState
 emptyState = ES {esPath = emptyPath, esFs = emptyFS}
 
+data ExplorerError = CmdUsgErr String | FileErr FileError | FSNotLoaded
+
+instance Show ExplorerError where
+  show :: ExplorerError -> String
+  show (CmdUsgErr msg) = msg
+  show (FileErr err) = show err
+  show FSNotLoaded = "No directory loaded"
+
+-- Except ytterst - ändringar som orsakar ett fel har ingen påverkan på state.
+
 newtype Explorer a = MKExplorer
-  (ExceptT FileError
+  (ExceptT ExplorerError
     (StateT ExplorerState IO)
   a)
   deriving (Functor, Applicative,
              Monad, MonadState  ExplorerState
-                  , MonadError  FileError
+                  , MonadError  ExplorerError
                   , MonadIO
                   )
 
@@ -47,7 +58,7 @@ runExplorer :: Explorer a -> IO a
 runExplorer (MKExplorer explorer) = do
   res <- evalStateT (runExceptT explorer) emptyState
   case res of
-    Left err -> error $ "From run function: " ++ show err
+    Left err -> error $ show err
     Right res' -> return res'
 
 -- File system
@@ -55,15 +66,16 @@ runExplorer (MKExplorer explorer) = do
 loadFileSystem :: FilePath -> Explorer ()
 loadFileSystem path = do
   dir <- analyzeDir path
-  let fs = FS (Just dir)
-  modify (\s -> s{esFs = fs})
+  let fs = FS (Just (path, dir))
+  modify (\s -> s{esFs = fs, esPath = emptyPath})
   -- TODO: set correct path
 
 tryAnalyzeDir :: FilePath -> Explorer Directory
 tryAnalyzeDir path = catchError (analyzeDir path) badDir
   where
-    badDir :: FileError -> Explorer Directory
-    badDir err = return $ BadDir (takeFileName path) err
+    badDir :: ExplorerError -> Explorer Directory
+    badDir (FileErr err) = return $ BadDir (takeFileName path) err
+    badDir _ = error "Should not happen."
 
 analyzeDir :: FilePath -> Explorer Directory
 analyzeDir path = do
@@ -96,7 +108,7 @@ liftIOError action = do
   res <- liftIO $ tryIOError action
   case res of
     Right res' -> return res'
-    Left err -> throwError $ translateError err
+    Left err -> throwError $ FileErr $ translateError err
 
 translateError :: IOError -> FileError
 translateError err
@@ -106,18 +118,64 @@ translateError err
 
 -- REPL utils
 
-showStatus :: Explorer String
-showStatus = do
-  fs <- gets esFs
-  path <- gets esPath
-  return $ showFS fs path
+fsRoot :: Explorer (FilePath, Directory)
+fsRoot = do
+  FS cont <- gets esFs
+  case cont of
+    Nothing -> throwError FSNotLoaded
+    Just res -> return res
 
-showFS :: FileSystem -> Path -> String
-showFS (FS dir) path = case dir of
-  Nothing -> "No directory loaded, use \"load path\""
-  Just dir' -> showDir $ getDir dir' path
+rootPath :: Explorer FilePath
+rootPath = do
+  (path, _) <- fsRoot
+  return path
+
+fullPath :: Explorer Path
+fullPath = do
+  root <- rootPath
+  Path path <- gets esPath
+  return $ Path (root </> path)
+
+rootDir :: Explorer Directory
+rootDir = do
+  (_, dir) <- fsRoot
+  return dir
+
+showStatus :: Explorer String
+showStatus = catchError showStatus' (return . show)
+
+showStatus' :: Explorer String
+showStatus' = do
+  dir <- rootDir
+  path <- gets esPath
+  showFS dir path
+
+showFS :: Directory -> Path -> Explorer String
+showFS dir path = do
+  dir' <- getValidDir dir path
+  return $ showDir dir'
+
+getValidDir :: Directory -> Path -> Explorer Directory
+getValidDir dir path = case getDir dir path of
+  Nothing -> throwError (FileErr NoSuchFile)
+  Just (BadDir _ err) -> throwError (FileErr err)
+  Just dir' -> return dir'
 
 showCaret :: Explorer String
 showCaret = do
+  path <- catchError fullPath (\_ -> return $ Path "")
+  return $ show path ++ "> "
+
+-- CD
+
+moveToRoot :: Explorer ()
+moveToRoot = modify (\s -> s{esPath = emptyPath})
+
+moveTo :: FilePath -> Explorer ()
+moveTo dest = do
   path <- gets esPath
-  return $ showPath path ++ "> "
+  let path' = if dest == ".." then moveUp path else moveDown path dest
+  root <- trace (show path') rootDir
+  case getDir root path' of
+    Nothing -> throwError (FileErr NoSuchFile)
+    Just _ -> modify (\s -> s{esPath = path'})
